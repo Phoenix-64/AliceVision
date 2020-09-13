@@ -301,14 +301,14 @@ public:
     return true;
   }
 
-  bool computeScale(double & result) {
+  bool computeScale(double & result, float ratioUpscale) {
     
     std::vector<double> scales;
     size_t real_height = _coordinates.Height();
     size_t real_width = _coordinates.Width();
 
-    for (int i = 0; i < real_height - 1; i++) {
-      for (int j = 0; j < real_width - 1; j++) {
+    for (int i = 1; i < real_height - 2; i++) {
+      for (int j = 1; j < real_width - 2; j++) {
         if (!_mask(i, j) || !_mask(i, j + 1) || !_mask(i + 1, j)) {
           continue;
         }
@@ -319,14 +319,18 @@ public:
         double dyy = _coordinates(i + 1, j).y() - _coordinates(i, j).y();
 
         double det = std::abs(dxx*dyy - dxy*dyx);
+        if (det < 1e-12) continue;
+        
         scales.push_back(det);
       }
     }
 
-    if (scales.size() <= 1) return false;
+    if (scales.empty()) return false;
 
-    std::nth_element(scales.begin(), scales.begin() + scales.size() / 2, scales.end());
-    result = sqrt(scales[scales.size() / 2]);
+    std::sort(scales.begin(), scales.end());
+    int selected_index = int(floor(float(scales.size() - 1) * ratioUpscale));
+    result = sqrt(scales[selected_index]);
+
     
 
     return true;
@@ -932,7 +936,7 @@ public:
   }
 };
 
-bool computeOptimalPanoramaSize(std::pair<int, int> & optimalSize, const sfmData::SfMData & sfmData) {
+bool computeOptimalPanoramaSize(std::pair<int, int> & optimalSize, const sfmData::SfMData & sfmData, const float ratioUpscale) {
 
   optimalSize.first = 512;
   optimalSize.second = 256;
@@ -966,7 +970,7 @@ bool computeOptimalPanoramaSize(std::pair<int, int> & optimalSize, const sfmData
     }
 
     double scale;
-    if (!map.computeScale(scale)) {
+    if (!map.computeScale(scale, ratioUpscale)) {
       continue;
     }
 
@@ -974,27 +978,23 @@ bool computeOptimalPanoramaSize(std::pair<int, int> & optimalSize, const sfmData
   }
 
   
-  if (scales.size() > 1) {
-    double median_scale;
-    std::nth_element(scales.begin(), scales.begin() + scales.size() / 2, scales.end());
-    median_scale = scales[scales.size() / 2];
-
-    double multiplier = pow(2.0, int(floor(log2(median_scale))));
-    
-    optimalSize.first = optimalSize.first * multiplier;
-    optimalSize.second = optimalSize.second * multiplier;
+  if (scales.empty()) {
+    return false;
   }
 
-  return true;
-}
+  std::sort(scales.begin(), scales.end());
+  int selected_index = int(floor(float(scales.size() - 1) * ratioUpscale));
+  double selected_scale = scales[selected_index];
 
-Eigen::Matrix3d getAutoPanoRotation(double yaw, double pitch, double roll) {
-    
-  Eigen::AngleAxis<double> Myaw(- yaw * M_PI / 180.0, Eigen::Vector3d::UnitY());
-  Eigen::AngleAxis<double> Mpitch(- pitch * M_PI / 180.0, Eigen::Vector3d::UnitX());
-  Eigen::AngleAxis<double> Mroll(- roll * M_PI / 180.0, Eigen::Vector3d::UnitZ());
-    
-  return  Mroll.toRotationMatrix()* Mpitch.toRotationMatrix()  *  Myaw.toRotationMatrix();
+  ALICEVISION_LOG_INFO("Estimated panorama size: "  << int(optimalSize.first * selected_scale) << "x" << int(optimalSize.second * selected_scale));
+
+  double multiplier = pow(2.0, int(floor(log2(selected_scale))));
+  optimalSize.first = optimalSize.first * multiplier;
+  optimalSize.second = optimalSize.second * multiplier;
+
+  ALICEVISION_LOG_INFO("Estimated panorama size (Rounded to lower power of two): "  << optimalSize.first << "x" << optimalSize.second);
+
+  return true;
 }
 
 int aliceVision_main(int argc, char **argv)
@@ -1002,7 +1002,11 @@ int aliceVision_main(int argc, char **argv)
   std::string sfmDataFilename;
   std::string outputDirectory;
 
-  std::pair<int, int> panoramaSize = {1024, 0};
+  std::pair<int, int> panoramaSize = {0, 0};
+  int percentUpscale = 50;
+
+  image::EStorageDataType storageDataType = image::EStorageDataType::Float;
+
   int rangeStart = -1;
   int rangeSize = 1;
 
@@ -1024,6 +1028,10 @@ int aliceVision_main(int argc, char **argv)
   optionalParams.add_options()
     ("panoramaWidth,w", po::value<int>(&panoramaSize.first)->default_value(panoramaSize.first),
      "Panorama Width in pixels.")
+    ("percentUpscale", po::value<int>(&percentUpscale)->default_value(percentUpscale),
+     "Percentage of upscaled pixels.")
+    ("storageDataType", po::value<image::EStorageDataType>(&storageDataType)->default_value(storageDataType),
+      ("Storage data type: " + image::EStorageDataType_informations()).c_str())
     ("rangeStart", po::value<int>(&rangeStart)->default_value(rangeStart),
      "Range image index start.")
     ("rangeSize", po::value<int>(&rangeSize)->default_value(rangeSize),
@@ -1094,10 +1102,17 @@ int aliceVision_main(int argc, char **argv)
   // If panorama width is undefined, estimate it
   if (panoramaSize.first <= 0)
   {
+    float ratioUpscale = clamp(float(percentUpscale) / 100.0f, 0.0f, 1.0f);
+
+
     std::pair<int, int> optimalPanoramaSize;
-    if (computeOptimalPanoramaSize(optimalPanoramaSize, sfmData))
+    if (computeOptimalPanoramaSize(optimalPanoramaSize, sfmData, ratioUpscale))
     {
       panoramaSize = optimalPanoramaSize;
+    }
+    else {
+      ALICEVISION_LOG_INFO("Impossible to compute an optimal panorama size");
+      return EXIT_FAILURE;
     }
   }
   else
@@ -1180,12 +1195,19 @@ int aliceVision_main(int argc, char **argv)
         metadata.push_back(oiio::ParamValue("AliceVision:panoramaWidth", panoramaSize.first));
         metadata.push_back(oiio::ParamValue("AliceVision:panoramaHeight", panoramaSize.second));
 
+        // Images will be converted in Panorama coordinate system, so there will be no more extra orientation.
+        metadata.remove("Orientation");
+        metadata.remove("orientation");
+
         {
             const aliceVision::image::Image<image::RGBfColor> & cam = warper.getColor();
 
+            oiio::ParamValueList viewMetadata = metadata;
+            viewMetadata.push_back(oiio::ParamValue("AliceVision:storageDataType", image::EStorageDataType_enumToString(storageDataType)));
+
             const std::string viewFilepath = (fs::path(outputDirectory) / (viewIdStr + ".exr")).string();
             ALICEVISION_LOG_INFO("Store view " << i << " with path " << viewFilepath);
-            image::writeImage(viewFilepath, cam, image::EImageColorSpace::AUTO, metadata);
+            image::writeImage(viewFilepath, cam, image::EImageColorSpace::AUTO, viewMetadata);
         }
         {
             const aliceVision::image::Image<unsigned char> & mask = warper.getMask();

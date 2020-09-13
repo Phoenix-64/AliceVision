@@ -9,6 +9,7 @@
 
 #include <aliceVision/types.hpp>
 
+#include <regex>
 #include <string>
 #include <utility>
 
@@ -207,7 +208,7 @@ public:
    * For the same scene, this value is linearly proportional to the amount of light captured by the camera according to
    * the shooting parameters (shutter speed, f-number, iso).
    */
-  float getCameraExposureSetting() const;
+  float getCameraExposureSetting(const float referenceISO = 100.0f, const float referenceFNumber = 1.0f) const;
 
   /**
    * @brief Get the Exposure Value. EV is a number that represents a combination of a camera's shutter speed and
@@ -315,7 +316,7 @@ public:
    */
   double getMetadataShutter() const
   {
-      return getDoubleMetadata({"ExposureTime"});
+      return getDoubleMetadata({"ExposureTime", "Shutter Speed Value"});
   }
 
   /**
@@ -328,7 +329,7 @@ public:
       {
           return getDoubleMetadata({"FNumber"});
       }
-      if (hasDigitMetadata({"ApertureValue"}))
+      if (hasDigitMetadata({"ApertureValue", "Aperture Value"}))
       {
           const double aperture = getDoubleMetadata({"ApertureValue", "Aperture Value"});
           // fnumber = 2^(aperture/2)
@@ -358,9 +359,36 @@ public:
     return static_cast<EEXIFOrientation>(orientation);
   }
 
+  const bool hasMetadataDateTimeOriginal() const
+  {
+      return hasMetadata(
+          {"Exif:DateTimeOriginal", "DateTimeOriginal", "DateTime", "Date Time", "Create Date", "ctime"});
+  }
+
   const std::string& getMetadataDateTimeOriginal() const
   {
-    return getMetadata({"Exif:DateTimeOriginal", "DateTimeOriginal", "DateTime", "Date Time", "Create Date"});
+    return getMetadata({"Exif:DateTimeOriginal", "DateTimeOriginal", "DateTime", "Date Time", "Create Date", "ctime"});
+  }
+
+  int64_t getMetadataDateTimestamp() const {
+
+    std::smatch sm;
+    std::string dtstring = getMetadataDateTimeOriginal();
+    std::regex regex("([\\d]+):([\\d]+):([\\d]+) ([\\d]+):([\\d]+):([\\d]+)");
+    
+    if (!std::regex_match(dtstring, sm, regex)) {
+      return -1;
+    }
+    
+    int64_t year = std::stoi(sm[1]);
+    int64_t month = std::stoi(sm[2]);
+    int64_t day = std::stoi(sm[3]);
+    int64_t hour = std::stoi(sm[4]);
+    int64_t minutes = std::stoi(sm[5]);
+    int64_t seconds = std::stoi(sm[6]);
+    int64_t timecode = ((((((((year * 12) + month) * 31) + day) * 24) + hour) * 60 + minutes) * 60) + seconds;
+
+    return timecode;
   }
 
   /**
